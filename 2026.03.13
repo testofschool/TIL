@@ -1,0 +1,109 @@
+# Claude Code Remote Control 셋업 삽질기
+
+> 🗓 2026-03-13 | 🏷 `Claude Code` `Remote Control` `디버깅` `TIL`
+
+## 🎯 목표
+
+Mac Studio + MBP 두 대에서 Claude Code Remote Control을 켜고, 폰/브라우저(claude.ai/code)에서 원격으로 프롬프트를 보내고 결과를 확인하는 환경 구축.
+
+---
+
+## 💡 배운 것
+
+### 1. Remote Control이란?
+
+Claude Code 터미널 세션을 `claude.ai/code` 또는 Claude 모바일 앱에서 원격으로 이어받는 기능이다. 로컬 파일시스템, MCP 서버, 프로젝트 설정이 전부 유지된 채로 폰에서 프롬프트를 보내고 결과를 볼 수 있다.
+
+```bash
+# 시작
+claude remote-control --name "Mac Studio"
+
+# 이미 세션 안이면
+/rc
+```
+
+### 2. 삽질: 에러 메시지만 보고 빙빙 돌았다
+
+MBP에서 `claude remote-control`을 실행하면 두 가지 에러가 반복됐다:
+
+| 에러 | 원인 |
+|---|---|
+| `Workspace not trusted` | `~/.claude.json`에 `hasTrustDialogAccepted: false` |
+| `Remote Control is not yet enabled` | `cachedExtraUsageDisabledReason: "org_level_disabled"` 캐시 버그 |
+
+interactive하게 trust를 수락해도 값이 파일에 저장되지 않는 **별도의 버그**가 있었다.
+
+### 3. 해결: 설정 파일을 직접 열어보니 답이 있었다
+
+```bash
+# 1. 캐시 초기화
+cp ~/.claude.json ~/.claude.json.bak
+rm ~/.claude.json
+claude /login  # Max 계정으로 재인증
+
+# 2. trust 값 직접 수정
+python3 -c "
+import json
+with open('$HOME/.claude.json', 'r') as f:
+    d = json.load(f)
+d['projects']['/Users/taehwakang']['hasTrustDialogAccepted'] = True
+with open('$HOME/.claude.json', 'w') as f:
+    json.dump(d, f, indent=2)
+"
+```
+
+**핵심 교훈:** 에러 메시지를 믿되, 내부 상태(`~/.claude.json`)를 직접 확인하라.
+
+### 4. 디버깅 3단계 프레임워크
+
+```
+에러 발생
+  → 1단계: 에러가 참조하는 설정 파일/경로를 찾는다
+  → 2단계: 실제 값을 눈으로 확인한다
+  → 3단계: 추측 대신 직접 수정하고 검증한다
+```
+
+비유: 자동차 시동이 안 걸릴 때 키를 계속 돌리는 게 아니라, **보닛을 열고 배터리 전압을 측정**하는 것.
+
+---
+
+## 🏗 최종 구성
+
+```
+┌─────────────────────────────────────────┐
+│              claude.ai/code              │
+│         (브라우저 / 폰 Claude 앱)         │
+│                                         │
+│   🟢 Mac Studio    🟢 MBP              │
+└────────┬──────────────────┬─────────────┘
+         │ TLS              │ TLS
+         ▼                  ▼
+  ┌──────────────┐  ┌──────────────┐
+  │  Mac Studio  │  │    MBP       │
+  │  M1 Max 64GB │  │  i7 16GB     │
+  │  while loop  │  │  while loop  │
+  │  자동재시작    │  │  자동재시작    │
+  └──────────────┘  └──────────────┘
+```
+
+자동 재시작 코드:
+
+```bash
+while true; do
+  claude remote-control --name "머신이름"
+  echo "Session ended. Restarting in 5s..."
+  sleep 5
+done
+```
+
+24시간 세션 제한이 있어서 자동 재시작 loop가 필수.
+
+---
+
+## 📌 기억할 것
+
+- `claude remote-control` = 터미널에서 직접 시작 (자동화 가능)
+- `/rc` = 이미 실행 중인 세션 안에서 활성화 (수동)
+- 터미널 닫으면 세션 끊김 — 반드시 열어둘 것
+- `~/.claude.json` 삭제 후 재로그인 = 캐시 버그 해결의 만능키
+- GitHub 이슈 #28098, #29192, #33119 — 같은 버그 리포트 다수 존재
